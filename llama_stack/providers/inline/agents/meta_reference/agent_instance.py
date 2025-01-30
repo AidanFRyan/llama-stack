@@ -171,9 +171,6 @@ class ChatAgent(ShieldRunnerMixin):
             if self.agent_config.instructions != "":
                 messages.append(SystemMessage(content=self.agent_config.instructions))
 
-            for i, turn in enumerate(turns):
-                messages.extend(self.turn_to_messages(turn))
-
             messages.extend(request.messages)
 
             turn_id = str(uuid.uuid4())
@@ -371,6 +368,7 @@ class ChatAgent(ShieldRunnerMixin):
         # TODO: simplify all of this code, it can be simpler
         toolgroup_args = {}
         toolgroups = set()
+        vector_db_ids = []
         for toolgroup in self.agent_config.toolgroups:
             if isinstance(toolgroup, AgentToolGroupWithArgs):
                 toolgroups.add(toolgroup.name)
@@ -576,6 +574,20 @@ class ChatAgent(ShieldRunnerMixin):
                 stop_reason=stop_reason,
                 tool_calls=tool_calls,
             )
+
+            if RAG_TOOL_GROUP in toolgroups:
+                await self.tool_runtime_api.rag_tool.insert(
+                    documents=[
+                        RAGDocument(document_id=str(uuid.uuid4()), content=m.content)
+                        for m in input_messages[1:]
+                    ]
+                    + [
+                        RAGDocument(
+                            document_id=str(uuid.uuid4()), content=message.content
+                        )
+                    ],
+                    vector_db_id=vector_db_ids[-1],
+                )
 
             yield AgentTurnResponseStreamChunk(
                 event=AgentTurnResponseEvent(
