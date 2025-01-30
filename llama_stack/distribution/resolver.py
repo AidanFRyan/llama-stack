@@ -104,6 +104,15 @@ class ProviderWithSpec(Provider):
 ProviderRegistry = Dict[Api, Dict[str, ProviderSpec]]
 
 
+def split_routed_apis(
+    auto_routed_apis: list[AutoRoutedApiInfo],
+) -> tuple[set[Api], set[Api]]:
+    return (
+        set(x.routing_table_api for x in auto_routed_apis),
+        set(x.router_api for x in auto_routed_apis),
+    )
+
+
 # TODO: this code is not very straightforward to follow and needs one more round of refactoring
 async def resolve_impls(
     run_config: StackRunConfig,
@@ -115,13 +124,13 @@ async def resolve_impls(
     - flatmaps, sorts and resolves the providers in dependency order
     - for each API, produces either a (local, passthrough or router) implementation
     """
-    routing_table_apis = set(
-        x.routing_table_api for x in builtin_automatically_routed_apis()
+    routing_table_apis, router_apis = split_routed_apis(
+        builtin_automatically_routed_apis()
     )
-    router_apis = set(x.router_api for x in builtin_automatically_routed_apis())
 
     providers_with_specs = {}
 
+    # for each api
     for api_str, providers in run_config.providers.items():
         api = Api(api_str)
         if api in routing_table_apis:
@@ -130,12 +139,13 @@ async def resolve_impls(
             )
 
         specs = {}
+        # for each provider of api
         for provider in providers:
             if provider.provider_type not in provider_registry[api]:
                 raise ValueError(
                     f"Provider `{provider.provider_type}` is not available for API `{api}`"
                 )
-
+            # provider instance from provider_registry
             p = provider_registry[api][provider.provider_type]
             if p.deprecation_error:
                 log.error(p.deprecation_error, "red", attrs=["bold"])
@@ -145,24 +155,29 @@ async def resolve_impls(
                 log.warning(
                     f"Provider `{provider.provider_type}` for API `{api}` is deprecated and will be removed in a future release: {p.deprecation_warning}",
                 )
+            # p.deps__ takes values of required and optional api dependencies
             p.deps__ = [a.value for a in p.api_dependencies] + [
                 a.value for a in p.optional_api_dependencies
             ]
+            # create provider instance with ProviderSpec
             spec = ProviderWithSpec(
                 spec=p,
                 **(provider.model_dump()),
             )
+            # specs dict takes spec for provider
             specs[provider.provider_id] = spec
-
+        # set key to api_str if not in router_apis, else inner-api-str (used for lookup in shady looking code)
         key = api_str if api not in router_apis else f"inner-{api_str}"
         providers_with_specs[key] = specs
 
+    # apis_to_serve becomes run_config.apis if not empty else becomes set of providers_with_specs.keys + routing_table_apis + router_apis
     apis_to_serve = run_config.apis or set(
         list(providers_with_specs.keys())
         + [x.value for x in routing_table_apis]
         + [x.value for x in router_apis]
     )
 
+    # for each builtin routed apis
     for info in builtin_automatically_routed_apis():
         if info.router_api.value not in apis_to_serve:
             continue
